@@ -1,0 +1,17 @@
+# Core
+pandas>=2.0,<3.0
+python-dotenv>=1.0,<2.0
+
+# LLM SDKs (uncomment the ones you use)
+openai>=1.30,<2.0
+# anthropic>=0.30,<1.0
+# google-genai>=1.0,<2.0
+
+# Async HTTP (for custom provider calls)
+aiohttp>=3.9,<4.0
+
+# CLI
+argparse  # stdlib, listed for clarity
+
+# Evaluation
+# scikit-learn>=1.4,<2.0  # optional, for metrics
