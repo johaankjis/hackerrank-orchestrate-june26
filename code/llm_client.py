@@ -48,7 +48,7 @@ def _get_semaphore() -> asyncio.Semaphore:
 
 # ── Disk cache helpers ────────────────────────────────────────────────────────
 
-PROMPT_VERSION = "v0"  # bump when prompts change meaningfully
+PROMPT_VERSION = "v3"  # bump when prompts change meaningfully
 
 
 def _hash_file(path: pathlib.Path) -> str:

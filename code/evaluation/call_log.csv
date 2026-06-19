@@ -78,3 +78,11 @@ timestamp,stage,model,prompt_tokens,completion_tokens,latency_ms,cache_hit,image
 2026-06-19T15:53:57.143613+00:00,claim_extraction,gpt-4.1-mini,0,0,0.0,True,0
 2026-06-19T15:53:57.146539+00:00,claim_extraction,gpt-4.1-mini,0,0,0.0,True,0
 2026-06-19T16:01:59.101414+00:00,claim_extraction,gpt-4.1-mini,0,0,0.0,True,0
+2026-06-19T16:07:42.656935+00:00,claim_extraction,gpt-4.1-mini,573,33,1812.2,False,0
+2026-06-19T16:07:46.752581+00:00,vision_verification,gpt-4.1-mini,3487,168,4087.3,False,2
+2026-06-19T16:08:38.583425+00:00,claim_extraction,gpt-4.1-mini,0,0,0.0,True,0
+2026-06-19T16:08:38.585827+00:00,vision_verification,gpt-4.1-mini,0,0,0.0,True,2
+2026-06-19T16:15:06.380122+00:00,claim_extraction,gpt-4.1-mini,573,33,1610.2,False,0
+2026-06-19T16:15:10.372179+00:00,vision_verification,gpt-4.1-mini,3738,190,3987.1,False,2
+2026-06-19T16:18:49.109610+00:00,claim_extraction,gpt-4.1-mini,573,33,1631.1,False,0
+2026-06-19T16:18:53.302647+00:00,vision_verification,gpt-4.1-mini,3952,175,4189.3,False,2
