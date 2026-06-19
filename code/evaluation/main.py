@@ -15,6 +15,7 @@ import asyncio
 from datetime import datetime, timezone
 import pathlib
 import sys
+import time
 from typing import Any
 
 # Add parent dir to sys.path so we can import project modules
@@ -87,6 +88,8 @@ EXACT_MATCH_COLUMNS = [
     "object_part",
     "evidence_standard_met",
     "valid_image",
+    "severity",
+    "supporting_image_ids",
 ]
 
 SET_OVERLAP_COLUMNS = [
@@ -154,7 +157,7 @@ async def _run_strategy(
     strategy: str,
     gold_path: pathlib.Path,
     limit: int | None,
-) -> pathlib.Path:
+) -> dict[str, Any]:
     pred_path = config._CODE_DIR / "evaluation" / f"sample_predictions_{strategy}.csv"
     args = argparse.Namespace(
         input=gold_path,
@@ -162,8 +165,19 @@ async def _run_strategy(
         strategy=strategy,
         limit=limit,
     )
+    log_before = _read_call_log()
+    before_len = len(log_before)
+    t0 = time.perf_counter()
     await pipeline_main.run(args)
-    return pred_path
+    runtime_s = time.perf_counter() - t0
+    log_after = _read_call_log()
+    new_log = log_after.iloc[before_len:].copy()
+    return {
+        "strategy": strategy,
+        "path": pred_path,
+        "runtime_s": runtime_s,
+        "call_log": new_log,
+    }
 
 
 def _score_predictions(
@@ -171,6 +185,8 @@ def _score_predictions(
     pred_path: pathlib.Path,
     gold_df: pd.DataFrame,
     limit: int | None,
+    runtime_s: float | None = None,
+    call_log: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     pred_df = pd.read_csv(pred_path)
     if limit is not None:
@@ -195,6 +211,8 @@ def _score_predictions(
         "exact_scores": exact_scores,
         "set_scores": set_scores,
         "mean_exact": mean_exact,
+        "runtime_s": runtime_s,
+        "call_log": call_log if call_log is not None else pd.DataFrame(),
     }
 
 
@@ -260,6 +278,24 @@ def _operational_rows(call_log: pd.DataFrame) -> list[dict[str, Any]]:
     return rows
 
 
+def _operational_totals(call_log: pd.DataFrame) -> dict[str, Any]:
+    rows = _operational_rows(call_log)
+    prompt_tokens = sum(row["prompt_tokens"] for row in rows)
+    completion_tokens = sum(row["completion_tokens"] for row in rows)
+    return {
+        "calls": sum(row["calls"] for row in rows),
+        "billable_calls": sum(row["billable_calls"] for row in rows),
+        "cache_hits": sum(row["cache_hits"] for row in rows),
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "images": sum(row["images"] for row in rows),
+        "est_cost_usd": (
+            prompt_tokens * config.LLM_INPUT_COST_PER_1M
+            + completion_tokens * config.LLM_OUTPUT_COST_PER_1M
+        ) / 1_000_000,
+    }
+
+
 def _pct(value: float) -> str:
     return f"{value * 100:.1f}%"
 
@@ -278,12 +314,12 @@ def _write_report(
     report_path: pathlib.Path,
     gold_path: pathlib.Path,
     results: list[dict[str, Any]],
-    operational: list[dict[str, Any]],
     limit: int | None,
 ) -> None:
     result_rows = []
     for result in results:
         scores = result["exact_scores"]
+        op = _operational_totals(result.get("call_log", pd.DataFrame()))
         result_rows.append([
             result["strategy"],
             result["rows"],
@@ -292,34 +328,44 @@ def _write_report(
             _pct(scores["object_part"]),
             _pct(scores["evidence_standard_met"]),
             _pct(scores["valid_image"]),
-            _pct(result["mean_exact"]),
-        ])
-
-    set_rows = []
-    for result in results:
-        scores = result["set_scores"]
-        set_rows.append([
-            result["strategy"],
-            _pct(scores["risk_flags"]),
+            _pct(scores["severity"]),
             _pct(scores["supporting_image_ids"]),
-            result["path"],
+            _pct(result["mean_exact"]),
+            f"{result['runtime_s']:.1f}s" if result.get("runtime_s") is not None else "n/a",
+            op["calls"],
+            op["billable_calls"],
+            op["cache_hits"],
+            op["prompt_tokens"],
+            op["completion_tokens"],
+            op["images"],
+            f"${op['est_cost_usd']:.6f}",
         ])
 
-    op_rows = [
+    op_rows: list[list[Any]] = []
+    for result in results:
+        for row in _operational_rows(result.get("call_log", pd.DataFrame())):
+            op_rows.append([
+                row["strategy"],
+                row["stage"],
+                row["model"],
+                row["calls"],
+                row["billable_calls"],
+                row["cache_hits"],
+                row["prompt_tokens"],
+                row["completion_tokens"],
+                row["images"],
+                f"{row['avg_latency_ms']:.1f}",
+                f"${row['est_cost_usd']:.6f}",
+            ])
+
+    diagnostic_rows = [
         [
-            row["strategy"],
-            row["stage"],
-            row["model"],
-            row["calls"],
-            row["billable_calls"],
-            row["cache_hits"],
-            row["prompt_tokens"],
-            row["completion_tokens"],
-            row["images"],
-            f"{row['avg_latency_ms']:.1f}",
-            f"${row['est_cost_usd']:.6f}",
+            result["strategy"],
+            _pct(result["set_scores"]["risk_flags"]),
+            _pct(result["set_scores"]["supporting_image_ids"]),
+            result["path"],
         ]
-        for row in operational
+        for result in results
     ]
 
     if not op_rows:
@@ -343,7 +389,17 @@ def _write_report(
                 "object_part",
                 "evidence_standard_met",
                 "valid_image",
+                "severity",
+                "supporting_image_ids",
                 "mean_exact",
+                "runtime",
+                "llm_calls",
+                "billable_calls",
+                "cache_hits",
+                "prompt_tokens",
+                "completion_tokens",
+                "images",
+                "est_cost_usd",
             ],
             result_rows,
         ),
@@ -352,7 +408,7 @@ def _write_report(
         "",
         _markdown_table(
             ["strategy", "risk_flags_f1", "supporting_image_ids_f1", "predictions"],
-            set_rows,
+            diagnostic_rows,
         ),
         "",
         "## Operational Analysis",
@@ -407,24 +463,30 @@ def run_evaluation(args: argparse.Namespace) -> None:
         strategy = args.strategy or "predictions"
         results = [_score_predictions(strategy, args.predictions, gold_df, args.limit)]
     else:
-        prediction_paths: dict[str, pathlib.Path] = {}
+        run_infos: list[dict[str, Any]] = []
 
         async def _run_all() -> None:
             for strategy in args.strategies:
-                prediction_paths[strategy] = await _run_strategy(
+                run_infos.append(await _run_strategy(
                     strategy=strategy,
                     gold_path=args.gold,
                     limit=args.limit,
-                )
+                ))
 
         asyncio.run(_run_all())
         results = [
-            _score_predictions(strategy, path, gold_df, args.limit)
-            for strategy, path in prediction_paths.items()
+            _score_predictions(
+                run_info["strategy"],
+                run_info["path"],
+                gold_df,
+                args.limit,
+                runtime_s=run_info["runtime_s"],
+                call_log=run_info["call_log"],
+            )
+            for run_info in run_infos
         ]
 
-    operational = _operational_rows(_read_call_log())
-    _write_report(args.report, args.gold, results, operational, args.limit)
+    _write_report(args.report, args.gold, results, args.limit)
 
     print(f"Gold: {args.gold}")
     print(f"Report: {args.report}")

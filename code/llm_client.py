@@ -5,8 +5,9 @@ This module provides:
   • call_llm()  – the single async entry-point for every LLM call in the
                   pipeline.  It handles concurrency, retries, disk caching,
                   and per-call logging.
-  • The actual provider SDK call is a clearly marked TODO stub that raises
-    NotImplementedError.  Another tool / session will fill it in.
+  • Provider adapters for OpenAI-compatible chat completions. Direct OpenAI
+    and Azure OpenAI are supported; more providers can be added behind the
+    same call_llm() boundary.
 
 Design decisions:
   - asyncio.Semaphore bounds concurrency (default 8, from config).
@@ -197,6 +198,30 @@ def _image_to_data_url(path: pathlib.Path) -> str:
     return f"data:{mime_type};base64,{data}"
 
 
+def _build_user_parts(
+    user_content: str,
+    images: list[pathlib.Path] | None,
+) -> list[dict[str, Any]]:
+    """Build OpenAI/Azure multimodal user content blocks."""
+    user_parts: list[dict[str, Any]] = [{"type": "text", "text": user_content}]
+    for image_path in images or []:
+        user_parts.append({
+            "type": "image_url",
+            "image_url": {
+                "url": _image_to_data_url(image_path),
+                "detail": "high",
+            },
+        })
+    return user_parts
+
+
+def _usage_dict(usage: Any) -> dict[str, int]:
+    return {
+        "prompt_tokens": getattr(usage, "prompt_tokens", 0) if usage else 0,
+        "completion_tokens": getattr(usage, "completion_tokens", 0) if usage else 0,
+    }
+
+
 async def _call_openai_provider(
     model: str,
     system_prompt: str,
@@ -219,16 +244,6 @@ async def _call_openai_provider(
 
     client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
 
-    user_parts: list[dict[str, Any]] = [{"type": "text", "text": user_content}]
-    for image_path in images or []:
-        user_parts.append({
-            "type": "image_url",
-            "image_url": {
-                "url": _image_to_data_url(image_path),
-                "detail": "high",
-            },
-        })
-
     response = await client.chat.completions.create(
         model=model,
         temperature=config.LLM_TEMPERATURE,
@@ -236,20 +251,68 @@ async def _call_openai_provider(
         response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_parts},
+            {"role": "user", "content": _build_user_parts(user_content, images)},
         ],
     )
 
     content = response.choices[0].message.content or ""
-    usage = getattr(response, "usage", None)
     return {
         "content": content,
-        "usage": {
-            "prompt_tokens": getattr(usage, "prompt_tokens", 0) if usage else 0,
-            "completion_tokens": (
-                getattr(usage, "completion_tokens", 0) if usage else 0
-            ),
-        },
+        "usage": _usage_dict(getattr(response, "usage", None)),
+    }
+
+
+async def _call_azure_openai_provider(
+    model: str,
+    system_prompt: str,
+    user_content: str,
+    images: list[pathlib.Path] | None = None,
+) -> dict[str, Any]:
+    """Call Azure OpenAI Chat Completions with optional image inputs."""
+    required = {
+        "AZURE_OPENAI_API_KEY": config.AZURE_OPENAI_API_KEY,
+        "AZURE_OPENAI_ENDPOINT": config.AZURE_OPENAI_ENDPOINT,
+        "AZURE_OPENAI_DEPLOYMENT": config.AZURE_OPENAI_DEPLOYMENT,
+        "AZURE_OPENAI_API_VERSION": config.AZURE_OPENAI_API_VERSION,
+    }
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        raise RuntimeError(
+            "Missing Azure OpenAI environment variable(s): "
+            + ", ".join(missing)
+            + ". Set them in the environment or code/.env."
+        )
+
+    try:
+        from openai import AzureOpenAI
+    except ImportError as exc:
+        raise RuntimeError(
+            "The openai package is not installed. Run `pip install -r requirements.txt`."
+        ) from exc
+
+    client = AzureOpenAI(
+        api_key=config.AZURE_OPENAI_API_KEY,
+        azure_endpoint=config.AZURE_OPENAI_ENDPOINT,
+        api_version=config.AZURE_OPENAI_API_VERSION,
+    )
+
+    def _sync_call() -> Any:
+        return client.chat.completions.create(
+            model=config.AZURE_OPENAI_DEPLOYMENT,
+            temperature=config.LLM_TEMPERATURE,
+            max_tokens=config.LLM_MAX_TOKENS,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": _build_user_parts(user_content, images)},
+            ],
+        )
+
+    response = await asyncio.to_thread(_sync_call)
+    content = response.choices[0].message.content or ""
+    return {
+        "content": content,
+        "usage": _usage_dict(getattr(response, "usage", None)),
     }
 
 
@@ -269,6 +332,13 @@ async def _call_provider(
     provider = config.LLM_PROVIDER
     if provider == "openai":
         return await _call_openai_provider(model, system_prompt, user_content, images)
+    if provider == "azure_openai":
+        return await _call_azure_openai_provider(
+            model,
+            system_prompt,
+            user_content,
+            images,
+        )
 
     raise NotImplementedError(
         f"LLM_PROVIDER={provider!r} is not implemented in llm_client yet. "

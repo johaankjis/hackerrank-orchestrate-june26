@@ -308,6 +308,22 @@ def _coerce_issue_type(value: Any) -> str:
     return _coerce_enum(value, config.ALLOWED_ISSUE_TYPES, "unknown", ISSUE_ALIASES)
 
 
+def _coerce_issue_from_text(value: Any) -> str:
+    direct = _coerce_issue_type(value)
+    if direct != "unknown":
+        return direct
+    token = _norm_token(value)
+    if not token:
+        return "unknown"
+    for issue in sorted(config.ALLOWED_ISSUE_TYPES, key=len, reverse=True):
+        if issue not in {"none", "unknown"} and issue in token:
+            return issue
+    for alias, issue in ISSUE_ALIASES.items():
+        if alias in token:
+            return issue
+    return "unknown"
+
+
 def _coerce_object_part(value: Any, claim_object: str) -> str:
     allowed = config.ALLOWED_OBJECT_PARTS.get(claim_object, {"unknown"})
     aliases = PART_ALIASES.get(claim_object, {})
@@ -471,16 +487,20 @@ def _validate_extracted_claim(data: dict[str, Any], ctx: ClaimContext) -> dict[s
     if not isinstance(data, dict):
         raise ValueError("claim extraction response must be a JSON object")
     payload = data.get("claim") if isinstance(data.get("claim"), dict) else data
-    issue_type = _coerce_issue_type(payload.get("claimed_issue_type"))
+    claimed_issue = _clean_text(payload.get("claimed_issue"))
+    issue_type = _coerce_issue_from_text(
+        payload.get("claimed_issue_type", claimed_issue)
+    )
     object_part = _coerce_object_part(payload.get("claimed_object_part"), ctx.claim_object)
     family = _clean_text(payload.get("issue_family"))
     if not family:
         family = _issue_family(issue_type, object_part, ctx.claim_object)
     return {
+        "claimed_issue": claimed_issue,
         "claimed_issue_type": issue_type,
         "claimed_object_part": object_part,
         "claim_summary": _clean_text(
-            payload.get("claim_summary"),
+            payload.get("claim_summary", claimed_issue),
             fallback="No concise claim summary was returned.",
         ),
         "issue_family": family,
@@ -529,7 +549,10 @@ def _validate_verification(
             payload.get("draft_claim_status", payload.get("claim_status"))
         ),
         "claim_status_justification": _clean_text(
-            payload.get("claim_status_justification"),
+            payload.get(
+                "claim_status_justification",
+                payload.get("draft_justification"),
+            ),
             fallback="The model did not provide a claim-status justification.",
         ),
         "requirement_checks": _requirement_checks(payload.get("requirement_checks")),

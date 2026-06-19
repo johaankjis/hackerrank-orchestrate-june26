@@ -27,9 +27,28 @@ for _candidate in (_CODE_DIR / ".env", _REPO_ROOT / ".env"):
 # ── Provider configuration ───────────────────────────────────────────────────
 
 LLM_PROVIDER: str = os.environ.get("LLM_PROVIDER", "openai").strip().lower()
-LLM_MODEL: str = os.environ.get("LLM_MODEL", "gpt-4o-mini").strip()
 
 OPENAI_API_KEY: str | None = os.environ.get("OPENAI_API_KEY", "").strip() or None
+AZURE_OPENAI_API_KEY: str | None = (
+    os.environ.get("AZURE_OPENAI_API_KEY", "").strip() or None
+)
+AZURE_OPENAI_ENDPOINT: str | None = (
+    os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip() or None
+)
+AZURE_OPENAI_DEPLOYMENT: str | None = (
+    os.environ.get("AZURE_OPENAI_DEPLOYMENT", "").strip() or None
+)
+AZURE_OPENAI_API_VERSION: str | None = (
+    os.environ.get("AZURE_OPENAI_API_VERSION", "").strip() or None
+)
+
+_DEFAULT_LLM_MODEL = (
+    AZURE_OPENAI_DEPLOYMENT
+    if LLM_PROVIDER == "azure_openai" and AZURE_OPENAI_DEPLOYMENT
+    else "gpt-4o-mini"
+)
+LLM_MODEL: str = os.environ.get("LLM_MODEL", _DEFAULT_LLM_MODEL).strip()
+
 GEMINI_API_KEY: str | None = os.environ.get("GEMINI_API_KEY", "").strip() or None
 ANTHROPIC_API_KEY: str | None = os.environ.get("ANTHROPIC_API_KEY", "").strip() or None
 
