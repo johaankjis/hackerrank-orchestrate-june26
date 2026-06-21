@@ -26,6 +26,8 @@ import hashlib
 import json
 import mimetypes
 import pathlib
+import shutil
+import subprocess
 import time
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -48,7 +50,7 @@ def _get_semaphore() -> asyncio.Semaphore:
 
 # ── Disk cache helpers ────────────────────────────────────────────────────────
 
-PROMPT_VERSION = "v3"  # bump when prompts change meaningfully
+PROMPT_VERSION = "v5"  # bump when prompts change meaningfully
 
 
 def _hash_file(path: pathlib.Path) -> str:
@@ -191,10 +193,66 @@ def _parse_json_object(raw_content: Any) -> dict[str, Any]:
     return parsed
 
 
+SUPPORTED_IMAGE_MIME_TYPES = {
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/gif",
+}
+
+
+def _sniff_image_mime_type(path: pathlib.Path) -> str:
+    """Infer image MIME type from file bytes, falling back to extension."""
+    header = path.read_bytes()[:32]
+    if header.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if header.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if header.startswith(b"RIFF") and header[8:12] == b"WEBP":
+        return "image/webp"
+    if header[4:8] == b"ftyp":
+        brand = header[8:16]
+        if b"avif" in brand or b"avis" in brand:
+            return "image/avif"
+    return mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+
+
+def _transcode_to_jpeg(path: pathlib.Path) -> pathlib.Path:
+    """
+    Convert unsupported local image formats (notably AVIF) to JPEG for
+    OpenAI/Azure vision endpoints. The conversion is cached by file hash.
+    """
+    converted_dir = config.CACHE_DIR / "converted_images"
+    converted_dir.mkdir(parents=True, exist_ok=True)
+    out_path = converted_dir / f"{_hash_file(path)}.jpg"
+    if out_path.is_file() and out_path.stat().st_size > 0:
+        return out_path
+
+    if shutil.which("sips") is None:
+        raise RuntimeError(
+            f"Image {path} is not in a provider-supported format and local "
+            "conversion tool 'sips' is unavailable."
+        )
+
+    subprocess.run(
+        ["sips", "-s", "format", "jpeg", str(path), "--out", str(out_path)],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return out_path
+
+
 def _image_to_data_url(path: pathlib.Path) -> str:
     """Read a local image and return an OpenAI-compatible data URL."""
-    mime_type = mimetypes.guess_type(path.name)[0] or "image/jpeg"
-    data = base64.b64encode(path.read_bytes()).decode("ascii")
+    mime_type = _sniff_image_mime_type(path)
+    payload_path = path
+    if mime_type not in SUPPORTED_IMAGE_MIME_TYPES:
+        payload_path = _transcode_to_jpeg(path)
+        mime_type = "image/jpeg"
+    data = base64.b64encode(payload_path.read_bytes()).decode("ascii")
     return f"data:{mime_type};base64,{data}"
 
 
